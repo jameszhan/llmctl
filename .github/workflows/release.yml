@@ -1,0 +1,103 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build tools
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          for tool in ./cmd/*; do
+            if [ -d "$tool" ]; then
+              tool_name=$(basename "$tool")
+              echo "Building $tool_name for $GOOS/$GOARCH"
+
+              # Set executable name
+              if [ "$GOOS" = "windows" ]; then
+                executable_name="${tool_name}.exe"
+              else
+                executable_name="$tool_name"
+              fi
+
+              # Build tool
+              cd $tool
+              go build -v -o $executable_name main.go
+              cd -
+
+              # Create tarball
+              tar -czvf ${tool_name}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz -C $tool $executable_name
+              rm $tool/$executable_name
+            fi
+          done
+
+      - name: Debug generated files
+        run: |
+          ls -l ./ || echo "-No files found!"
+          ls -l ./cmd/ || echo "-No files found!"
+          echo "Checking built files:"
+          ls -l ./cmd/*.tar.gz || echo "-No files found!"
+          echo "---------------------"
+          ls -l ./cmd/**/*.tar.gz || echo "+No files found!"
+          echo "+++++++++++++++++++++"
+          ls -l ./cmd/**/**/*.tar.gz || echo "No files found!"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-tools-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ./*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: List artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          ls -l ./artifacts
+
+      - name: Move files to artifacts directory
+        run: |
+          find ./artifacts -mindepth 2 -type f -exec mv {} ./artifacts/ \;
+          find ./artifacts -type d -empty -delete
+
+      - name: List final artifacts
+        run: ls -l ./artifacts
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          artifacts: ./artifacts/*
+          token: ${{ secrets.GITHUB_TOKEN }}
